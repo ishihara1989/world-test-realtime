@@ -90,30 +90,52 @@ void doit(double *x, int x_length, int fs){
   InitializeCheapTrickOption(fs, &c_option);
   c_option.f0_floor = 71.0;
   c_option.fft_size = GetFFTSizeForCheapTrick(fs, &c_option);
-  cout << "Harvest FFT length: "<< c_option.fft_size<<endl;
+  cout << "Cheap Trick FFT length: "<< c_option.fft_size<<endl;
+  double **spectrogram = new double *[f0_length];
+  double **real_spectrogram = new double *[f0_length+real_f0_length];
+  double **tmp_spectrogram = new double *[real_f0_length];
+  int hfft = c_option.fft_size/2+1;
+  for(int i=0; i<f0_length; i++){
+    spectrogram[i] = new double[hfft];
+  }
+  for(int i=0; i<f0_length+real_f0_length; i++){
+    real_spectrogram[i] = new double[hfft];
+  }
+  for(int i=0; i<real_f0_length; i++){
+    tmp_spectrogram[i] = new double[hfft];
+  }
 
   printf("\nAnalysis\n");
   Harvest(x, x_length, fs, &h_option, time_axis, f0);
-  for(int i=0; i< f0_length; i++){
-    cout<<f0[i]<<",";
-  }
-  cout<<endl;
-  cout<<endl;
-  for(int i=0; i< f0_length; i++){
-    cout<<time_axis[i]<<",";
-  }
+  // for(int i=0; i< f0_length; i++){
+  //   cout<<f0[i]<<",";
+  // }
+  // cout<<endl;
+  // cout<<endl;
+  // for(int i=0; i< f0_length; i++){
+  //   cout<<time_axis[i]<<",";
+  // }
+  // sp
+  CheapTrick(x, x_length, fs, time_axis, f0, f0_length, &c_option, spectrogram);
   cout<<endl;
   printf("\nAnalysis\n");
   for(int i=0; i<x_length-win_length;i+=shift){
     // F0
     Harvest(&x[i], win_length, fs, &h_option, time_axis, tmp_f0);
-    int cut=(win_length-shift)/2/128;
+    int cut=(win_length-shift)/2/128; //4ms = 16k/1000*4=64samp=1samp[f0]
     for(int j=0; j<(real_f0_length-1)/2; j++){
       real_f0[i/(shift/32)+j+cut]=tmp_f0[j+cut];
     }
 
     // Sp
     // SpectralEnvelopeEstimation(x, x_length, &world_parameters);
+    CheapTrick(&x[i], win_length, fs, time_axis, tmp_f0, real_f0_length, &c_option, tmp_spectrogram);
+    for(int j=0; j<(real_f0_length-1)/2; j++){
+      // cout << "j: " << j << ", ";
+      for(int k=0;k<hfft; k++){
+        real_spectrogram[i/(shift/32)+j+cut][k]=tmp_spectrogram[j+cut][k];
+      }
+    }
     
     // Ap
     // AperiodicityEstimation(x, x_length, &world_parameters);
@@ -122,13 +144,31 @@ void doit(double *x, int x_length, int fs){
   //   cout<<real_f0[i]<<",";
   // }
   cout<<endl;
+  // CheapTrick(x, x_length, fs, time_axis, real_f0, f0_length, &c_option, real_spectrogram);
+
   cout<<endl;
 
-  // f0 pair
-  // for(int i=0; i< f0_length; i++){
-  //   // cout << (f0[i]-real_f0[i])*(f0[i]-real_f0[i])<<","<<endl;
-  //   cout<<"("<<f0[i]<<","<<real_f0[i]<<"),";
-  // }
+  // f0 compair
+  for(int i=0; i< f0_length; i++){
+    // cout << (f0[i]-real_f0[i])*(f0[i]-real_f0[i])<<","<<endl;
+    cout<<"("<<f0[i]<<","<<real_f0[i]<<"),";
+  }
+  cout<<endl;
+  for(int i=0; i< f0_length; i++){
+    //sq err
+    double sum = 0.0;
+    double psum = 0.0;
+    // cout << "j: " << i << ", ";
+    for (int k=0; k<hfft; k++){
+      // cout << "k: " << k << ", ";
+      // sum+=(real_spectrogram[i][k]-spectrogram[i][k])*(real_spectrogram[i][k]-spectrogram[i][k])/(spectrogram[i][k]*spectrogram[i][k]+1e-20);
+      // sum+=(real_spectrogram[i][k]-spectrogram[i][k])*(real_spectrogram[i][k]-spectrogram[i][k]);
+      sum+=real_spectrogram[i][k]*real_spectrogram[i][k];
+      psum+=spectrogram[i][k]*spectrogram[i][k];
+    }
+    cout << "(" << sum << ", " << psum << ")";
+  }
+  cout<<endl;
 }
 
 
@@ -141,70 +181,70 @@ void DisplayInformation(int fs, int nbit, int x_length) {
   printf("Length %f [sec]\n", static_cast<double>(x_length) / fs);
 }
 
-void F0EstimationDio(double *x, int x_length,
-    WorldParameters *world_parameters) {
-  DioOption option = {0};
-  InitializeDioOption(&option);
+// void F0EstimationDio(double *x, int x_length,
+//     WorldParameters *world_parameters) {
+//   DioOption option = {0};
+//   InitializeDioOption(&option);
 
-  // Modification of the option
-  option.frame_period = world_parameters->frame_period;
+//   // Modification of the option
+//   option.frame_period = world_parameters->frame_period;
 
-  // Valuable option.speed represents the ratio for downsampling.
-  // The signal is downsampled to fs / speed Hz.
-  // If you want to obtain the accurate result, speed should be set to 1.
-  option.speed = 1;
+//   // Valuable option.speed represents the ratio for downsampling.
+//   // The signal is downsampled to fs / speed Hz.
+//   // If you want to obtain the accurate result, speed should be set to 1.
+//   option.speed = 1;
 
-  // You can set the f0_floor below world::kFloorF0.
-  option.f0_floor = 40.0;
+//   // You can set the f0_floor below world::kFloorF0.
+//   option.f0_floor = 40.0;
 
-  // You can give a positive real number as the threshold.
-  // Most strict value is 0, but almost all results are counted as unvoiced.
-  // The value from 0.02 to 0.2 would be reasonable.
-  option.allowed_range = 0.1;
+//   // You can give a positive real number as the threshold.
+//   // Most strict value is 0, but almost all results are counted as unvoiced.
+//   // The value from 0.02 to 0.2 would be reasonable.
+//   option.allowed_range = 0.1;
 
-  // Parameters setting and memory allocation.
-  world_parameters->f0_length = GetSamplesForDIO(world_parameters->fs,
-    x_length, world_parameters->frame_period);
-  world_parameters->f0 = new double[world_parameters->f0_length];
-  world_parameters->time_axis = new double[world_parameters->f0_length];
-  double *refined_f0 = new double[world_parameters->f0_length];
+//   // Parameters setting and memory allocation.
+//   world_parameters->f0_length = GetSamplesForDIO(world_parameters->fs,
+//     x_length, world_parameters->frame_period);
+//   world_parameters->f0 = new double[world_parameters->f0_length];
+//   world_parameters->time_axis = new double[world_parameters->f0_length];
+//   double *refined_f0 = new double[world_parameters->f0_length];
 
-  printf("\nAnalysis\n");
-  Dio(x, x_length, world_parameters->fs, &option, world_parameters->time_axis,
-      world_parameters->f0);
+//   printf("\nAnalysis\n");
+//   Dio(x, x_length, world_parameters->fs, &option, world_parameters->time_axis,
+//       world_parameters->f0);
 
-  // StoneMask is carried out to improve the estimation performance.
-  StoneMask(x, x_length, world_parameters->fs, world_parameters->time_axis,
-      world_parameters->f0, world_parameters->f0_length, refined_f0);
+//   // StoneMask is carried out to improve the estimation performance.
+//   StoneMask(x, x_length, world_parameters->fs, world_parameters->time_axis,
+//       world_parameters->f0, world_parameters->f0_length, refined_f0);
 
-  for (int i = 0; i < world_parameters->f0_length; ++i)
-    world_parameters->f0[i] = refined_f0[i];
+//   for (int i = 0; i < world_parameters->f0_length; ++i)
+//     world_parameters->f0[i] = refined_f0[i];
 
-  delete[] refined_f0;
-}
+//   delete[] refined_f0;
+// }
 
-void F0EstimationHarvest(double *x, int x_length,
-    WorldParameters *world_parameters) {
-  HarvestOption option = { 0 };
-  InitializeHarvestOption(&option);
+// void F0EstimationHarvest(double *x, int x_length,
+//     WorldParameters *world_parameters) {
+//   HarvestOption option = { 0 };
+//   InitializeHarvestOption(&option);
 
-  // You can change the frame period.
-  // But the estimation is carried out with 1-ms frame shift.
-  option.frame_period = world_parameters->frame_period;
+//   // You can change the frame period.
+//   // But the estimation is carried out with 1-ms frame shift.
+//   option.frame_period = world_parameters->frame_period;
 
-  // You can set the f0_floor below world::kFloorF0.
-  option.f0_floor = 40.0;
+//   // You can set the f0_floor below world::kFloorF0.
+//   option.f0_floor = 40.0;
 
-  // Parameters setting and memory allocation.
-  world_parameters->f0_length = GetSamplesForHarvest(world_parameters->fs,
-    x_length, world_parameters->frame_period);
-  world_parameters->f0 = new double[world_parameters->f0_length];
-  world_parameters->time_axis = new double[world_parameters->f0_length];
+//   // Parameters setting and memory allocation.
+//   world_parameters->f0_length = GetSamplesForHarvest(world_parameters->fs,
+//     x_length, world_parameters->frame_period);
+//   world_parameters->f0 = new double[world_parameters->f0_length];
+//   world_parameters->time_axis = new double[world_parameters->f0_length];
 
-  printf("\nAnalysis\n");
-  Harvest(x, x_length, world_parameters->fs, &option,
-      world_parameters->time_axis, world_parameters->f0);
-}
+//   printf("\nAnalysis\n");
+//   Harvest(x, x_length, world_parameters->fs, &option,
+//       world_parameters->time_axis, world_parameters->f0);
+// }
 
 void SpectralEnvelopeEstimation(double *x, int x_length,
     WorldParameters *world_parameters) {

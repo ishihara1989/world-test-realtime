@@ -20,7 +20,7 @@ test: $(OUT_DIR)/test
 
 test_OBJS=$(OUT_DIR)/objs/tools/audioio.o $(OUT_DIR)/objs/test/test.o
 $(OUT_DIR)/test: $(OUT_DIR)/libworld.a $(test_OBJS)
-	$(LINK) $(CXXFLAGS) -o $(OUT_DIR)/test $(test_OBJS) $(OUT_DIR)/libworld.a -lm
+	$(LINK) $(CXXFLAGS) -o $(OUT_DIR)/test.exe $(test_OBJS) $(OUT_DIR)/libworld.a -lm
 
 ctest_OBJS=$(OUT_DIR)/objs/tools/audioio.o $(OUT_DIR)/objs/test/ctest.o
 $(OUT_DIR)/ctest: $(OUT_DIR)/libworld.a $(ctest_OBJS)

@@ -74,8 +74,10 @@ void doit(double *x, int x_length, int fs){
   h_option.frame_period = 4.0;
   h_option.f0_floor = 80.0;
 
-  int win_length=2048+2048;
+  int overlap = 2048;
   int shift=2048;
+  int frame_shift_samp = 4*fs/1000;
+  int win_length=shift+overlap;
   int f0_length = GetSamplesForHarvest(fs, x_length, h_option.frame_period);
   cout << f0_length << ", " << x_length << endl;
   int real_f0_length = GetSamplesForHarvest(fs, win_length, h_option.frame_period);
@@ -104,6 +106,21 @@ void doit(double *x, int x_length, int fs){
   for(int i=0; i<real_f0_length; i++){
     tmp_spectrogram[i] = new double[hfft];
   }
+  D4COption d_option = {0};
+  InitializeD4COption(&d_option);
+  d_option.threshold = 0.85;
+  double **aperiodicity = new double *[f0_length];
+  double **real_aperiodicity = new double *[f0_length+real_f0_length];
+  double **tmp_aperiodicity = new double *[real_f0_length];
+  for(int i=0; i<f0_length; i++){
+    aperiodicity[i] = new double[hfft];
+  }
+  for(int i=0; i<f0_length+real_f0_length; i++){
+    real_aperiodicity[i] = new double[hfft];
+  }
+  for(int i=0; i<real_f0_length; i++){
+    tmp_aperiodicity[i] = new double[hfft];
+  }
 
   printf("\nAnalysis\n");
   Harvest(x, x_length, fs, &h_option, time_axis, f0);
@@ -117,28 +134,40 @@ void doit(double *x, int x_length, int fs){
   // }
   // sp
   CheapTrick(x, x_length, fs, time_axis, f0, f0_length, &c_option, spectrogram);
+  D4C(x, x_length, fs, time_axis, f0, f0_length, c_option.fft_size, &d_option, aperiodicity);
   cout<<endl;
   printf("\nAnalysis\n");
+  int cut = overlap/2/frame_shift_samp;
+  cout << cut << endl;
+  cout << frame_shift_samp << endl;
+  cout << real_f0_length << endl;
+  // cout << cut << endl;
   for(int i=0; i<x_length-win_length;i+=shift){
     // F0
     Harvest(&x[i], win_length, fs, &h_option, time_axis, tmp_f0);
-    int cut=(win_length-shift)/2/128; //4ms = 16k/1000*4=64samp=1samp[f0]
-    for(int j=0; j<(real_f0_length-1)/2; j++){
-      real_f0[i/(shift/32)+j+cut]=tmp_f0[j+cut];
+    for(int j=0; j<shift/frame_shift_samp; j++){
+      real_f0[i/frame_shift_samp+j+cut]=tmp_f0[j+cut];
     }
 
     // Sp
     // SpectralEnvelopeEstimation(x, x_length, &world_parameters);
     CheapTrick(&x[i], win_length, fs, time_axis, tmp_f0, real_f0_length, &c_option, tmp_spectrogram);
-    for(int j=0; j<(real_f0_length-1)/2; j++){
+    for(int j=0; j<shift/frame_shift_samp; j++){
       // cout << "j: " << j << ", ";
       for(int k=0;k<hfft; k++){
-        real_spectrogram[i/(shift/32)+j+cut][k]=tmp_spectrogram[j+cut][k];
+        real_spectrogram[i/frame_shift_samp+j+cut][k]=tmp_spectrogram[j+cut][k];
       }
     }
     
     // Ap
     // AperiodicityEstimation(x, x_length, &world_parameters);
+    D4C(x, win_length, fs, time_axis, tmp_f0, real_f0_length, c_option.fft_size, &d_option, tmp_aperiodicity);
+    for(int j=0; j<shift/frame_shift_samp; j++){
+      // cout << "j: " << j << ", ";
+      for(int k=0;k<hfft; k++){
+        real_aperiodicity[i/frame_shift_samp+j+cut][k]=tmp_aperiodicity[j+cut][k];
+      }
+    }
   }
   // for(int i=0; i< f0_length; i++){
   //   cout<<real_f0[i]<<",";
@@ -165,8 +194,11 @@ void doit(double *x, int x_length, int fs){
       // sum+=(real_spectrogram[i][k]-spectrogram[i][k])*(real_spectrogram[i][k]-spectrogram[i][k]);
       sum+=real_spectrogram[i][k]*real_spectrogram[i][k];
       psum+=spectrogram[i][k]*spectrogram[i][k];
+      // sum+=real_aperiodicity[i][k]*real_aperiodicity[i][k];
+      // psum+=aperiodicity[i][k]*aperiodicity[i][k];
     }
     cout << "(" << sum << ", " << psum << ")";
+    // cout <<  ", " << psum ;
   }
   cout<<endl;
 }
@@ -246,38 +278,38 @@ void DisplayInformation(int fs, int nbit, int x_length) {
 //       world_parameters->time_axis, world_parameters->f0);
 // }
 
-void SpectralEnvelopeEstimation(double *x, int x_length,
-    WorldParameters *world_parameters) {
-  CheapTrickOption option = {0};
-  // Note (2017/01/02): fs is added as an argument.
-  InitializeCheapTrickOption(world_parameters->fs, &option);
+// void SpectralEnvelopeEstimation(double *x, int x_length,
+//     WorldParameters *world_parameters) {
+//   CheapTrickOption option = {0};
+//   // Note (2017/01/02): fs is added as an argument.
+//   InitializeCheapTrickOption(world_parameters->fs, &option);
 
-  // Default value was modified to -0.15.
-  // option.q1 = -0.15;
+//   // Default value was modified to -0.15.
+//   // option.q1 = -0.15;
 
-  // Important notice (2017/01/02)
-  // You can set the fft_size.
-  // Default is GetFFTSizeForCheapTrick(world_parameters->fs, &option);
-  // When fft_size changes from default value,
-  // a replaced f0_floor will be used in CheapTrick().
-  // The lowest F0 that WORLD can work as expected is determined
-  // by the following : 3.0 * fs / fft_size.
-  option.f0_floor = 71.0;
-  option.fft_size = GetFFTSizeForCheapTrick(world_parameters->fs, &option);
-  // We can directly set fft_size.
-//   option.fft_size = 1024;
+//   // Important notice (2017/01/02)
+//   // You can set the fft_size.
+//   // Default is GetFFTSizeForCheapTrick(world_parameters->fs, &option);
+//   // When fft_size changes from default value,
+//   // a replaced f0_floor will be used in CheapTrick().
+//   // The lowest F0 that WORLD can work as expected is determined
+//   // by the following : 3.0 * fs / fft_size.
+//   option.f0_floor = 71.0;
+//   option.fft_size = GetFFTSizeForCheapTrick(world_parameters->fs, &option);
+//   // We can directly set fft_size.
+// //   option.fft_size = 1024;
 
-  // Parameters setting and memory allocation.
-  world_parameters->fft_size = option.fft_size;
-  world_parameters->spectrogram = new double *[world_parameters->f0_length];
-  for (int i = 0; i < world_parameters->f0_length; ++i)
-    world_parameters->spectrogram[i] =
-      new double[world_parameters->fft_size / 2 + 1];
+//   // Parameters setting and memory allocation.
+//   world_parameters->fft_size = option.fft_size;
+//   world_parameters->spectrogram = new double *[world_parameters->f0_length];
+//   for (int i = 0; i < world_parameters->f0_length; ++i)
+//     world_parameters->spectrogram[i] =
+//       new double[world_parameters->fft_size / 2 + 1];
 
-  CheapTrick(x, x_length, world_parameters->fs, world_parameters->time_axis,
-      world_parameters->f0, world_parameters->f0_length, &option,
-      world_parameters->spectrogram);
-}
+//   CheapTrick(x, x_length, world_parameters->fs, world_parameters->time_axis,
+//       world_parameters->f0, world_parameters->f0_length, &option,
+//       world_parameters->spectrogram);
+// }
 
 void AperiodicityEstimation(double *x, int x_length,
     WorldParameters *world_parameters) {

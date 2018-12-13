@@ -20,6 +20,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <iostream>
+#include <chrono>
 
 #if (defined (__WIN32__) || defined (_WIN32)) && !defined (__MINGW32__)
 #include <conio.h>
@@ -67,6 +68,81 @@ typedef struct {
 } WorldParameters;
 
 using namespace std;
+
+struct OnlineWorldParams{
+  double* f0;
+  double* time_axis;
+  double** spectrogram;
+  double** aperiodicity;
+};
+
+void online(const double *x, int x_length, int fs, double *y){
+  double frame_period = 4.0;
+  double f0_floor = 80.0;
+  double c_f0_floor = 71.0;
+  HarvestOption h_option = { 0 };
+  CheapTrickOption c_option = {0};
+  D4COption d_option = {0};
+  InitializeHarvestOption(&h_option);
+  h_option.frame_period = frame_period;
+  h_option.f0_floor = f0_floor;
+  InitializeCheapTrickOption(fs, &c_option);
+  c_option.f0_floor = c_f0_floor;
+  int fft_size = GetFFTSizeForCheapTrick(fs, &c_option);
+  c_option.fft_size = fft_size;
+  InitializeD4COption(&d_option);
+  d_option.threshold = 0.85;
+
+  WorldSynthesizer synthesizer = { 0 };
+  int buffer_size = 64;
+  InitializeSynthesizer(fs, frame_period, fft_size, buffer_size, 100, &synthesizer);
+
+  int overlap = 2048;
+  int shift=2048;
+  int frame_shift_samp = static_cast<int>(frame_period*fs/1000);
+  int win_length=shift+overlap;
+  int f0_length = GetSamplesForHarvest(fs, win_length, h_option.frame_period);
+  int hfft = fft_size/2+1;
+  int cut = overlap/2/frame_shift_samp;
+  double *f0 = new double[f0_length];
+  double *time_axis = new double[f0_length];
+  double **spectrogram = new double *[f0_length];
+  double **aperiodicity = new double *[f0_length];
+  for(int i=0; i<f0_length; i++){
+    spectrogram[i] = new double[hfft];
+    aperiodicity[i] = new double[hfft];
+  }
+  y = new double[x_length];
+
+  std::chrono::system_clock::time_point start = std::chrono::system_clock::now();
+  int index = 0;
+  for(int i=0; i<x_length-win_length;i+=shift){
+    Harvest(&x[i], win_length, fs, &h_option, time_axis, f0);
+    CheapTrick(&x[i], win_length, fs, time_axis, f0, f0_length, &c_option, spectrogram);
+    D4C(x, win_length, fs, time_axis, f0, f0_length, fft_size, &d_option, aperiodicity);
+
+    for (int ii = 0; ii < shift/frame_shift_samp;){
+      if (AddParameters(&f0[ii], 1,
+        &spectrogram[ii+cut], &aperiodicity[ii+cut],
+        &synthesizer) == 1) {++ii;}
+
+      while (Synthesis2(&synthesizer) != 0) {
+        for (int j = 0; j < buffer_size; ++j){
+          y[j + index] = synthesizer.buffer[j];
+        }
+        index += buffer_size;
+      }
+
+      if (IsLocked(&synthesizer) == 1) {
+        printf("Locked!\n");
+        break;
+      }
+    }
+  }
+  std::chrono::system_clock::time_point end = std::chrono::system_clock::now();
+  double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end-start).count();
+  cout << "elapsed: " << elapsed/1000.0 << "[sec]" << endl;
+}
 
 void doit(double *x, int x_length, int fs){
   HarvestOption h_option = { 0 };
@@ -122,17 +198,15 @@ void doit(double *x, int x_length, int fs){
     tmp_aperiodicity[i] = new double[hfft];
   }
 
+  WorldSynthesizer synthesizer = { 0 };
+  int buffer_size = 64;
+  InitializeSynthesizer(fs, h_option.frame_period,
+  c_option.fft_size, buffer_size, 100, &synthesizer);
+  int y_length = x_length;
+  double* y = new double[y_length];
+
   printf("\nAnalysis\n");
   Harvest(x, x_length, fs, &h_option, time_axis, f0);
-  // for(int i=0; i< f0_length; i++){
-  //   cout<<f0[i]<<",";
-  // }
-  // cout<<endl;
-  // cout<<endl;
-  // for(int i=0; i< f0_length; i++){
-  //   cout<<time_axis[i]<<",";
-  // }
-  // sp
   CheapTrick(x, x_length, fs, time_axis, f0, f0_length, &c_option, spectrogram);
   D4C(x, x_length, fs, time_axis, f0, f0_length, c_option.fft_size, &d_option, aperiodicity);
   cout<<endl;
@@ -141,21 +215,33 @@ void doit(double *x, int x_length, int fs){
   cout << cut << endl;
   cout << frame_shift_samp << endl;
   cout << real_f0_length << endl;
-  // cout << cut << endl;
+
+  int index = 0;
   for(int i=0; i<x_length-win_length;i+=shift){
     // F0
     Harvest(&x[i], win_length, fs, &h_option, time_axis, tmp_f0);
     for(int j=0; j<shift/frame_shift_samp; j++){
       real_f0[i/frame_shift_samp+j+cut]=tmp_f0[j+cut];
     }
+    if(i==0){
+      for(int j=0; j<cut; j++){
+        real_f0[j]=tmp_f0[j];
+      }
+    }
 
     // Sp
     // SpectralEnvelopeEstimation(x, x_length, &world_parameters);
     CheapTrick(&x[i], win_length, fs, time_axis, tmp_f0, real_f0_length, &c_option, tmp_spectrogram);
     for(int j=0; j<shift/frame_shift_samp; j++){
-      // cout << "j: " << j << ", ";
       for(int k=0;k<hfft; k++){
         real_spectrogram[i/frame_shift_samp+j+cut][k]=tmp_spectrogram[j+cut][k];
+      }
+    }
+    if(i==0){
+      for(int j=0; j<cut; j++){
+        for(int k=0;k<hfft; k++){
+          real_spectrogram[j][k]=tmp_spectrogram[j][k];
+        }
       }
     }
     
@@ -163,9 +249,40 @@ void doit(double *x, int x_length, int fs){
     // AperiodicityEstimation(x, x_length, &world_parameters);
     D4C(x, win_length, fs, time_axis, tmp_f0, real_f0_length, c_option.fft_size, &d_option, tmp_aperiodicity);
     for(int j=0; j<shift/frame_shift_samp; j++){
-      // cout << "j: " << j << ", ";
       for(int k=0;k<hfft; k++){
         real_aperiodicity[i/frame_shift_samp+j+cut][k]=tmp_aperiodicity[j+cut][k];
+      }
+    }
+    if(i==0){
+      for(int j=0; j<cut; j++){
+        for(int k=0;k<hfft; k++){
+          real_aperiodicity[j][k]=tmp_aperiodicity[j][k];
+        }
+      }
+    }
+
+    // synth
+    
+    for (int ii = 0; ii < shift/frame_shift_samp;) {
+      // Add one frame (i shows the frame index that should be added)
+      if (AddParameters(&tmp_f0[ii], 1,
+        &tmp_spectrogram[ii+cut], &tmp_aperiodicity[ii+cut],
+        &synthesizer) == 1) {++ii;}
+
+      // Synthesize speech with length of buffer_size sample.
+      // It is repeated until the function returns 0
+      // (it suggests that the synthesizer cannot generate speech).
+      while (Synthesis2(&synthesizer) != 0) {
+        for (int j = 0; j < buffer_size; ++j){
+          y[j + index] = synthesizer.buffer[j];
+        }
+        index += buffer_size;
+      }
+
+      // Check the "Lock" (Please see synthesisrealtime.h)
+      if (IsLocked(&synthesizer) == 1) {
+        printf("Locked!\n");
+        break;
       }
     }
   }
@@ -192,10 +309,10 @@ void doit(double *x, int x_length, int fs){
       // cout << "k: " << k << ", ";
       // sum+=(real_spectrogram[i][k]-spectrogram[i][k])*(real_spectrogram[i][k]-spectrogram[i][k])/(spectrogram[i][k]*spectrogram[i][k]+1e-20);
       // sum+=(real_spectrogram[i][k]-spectrogram[i][k])*(real_spectrogram[i][k]-spectrogram[i][k]);
-      sum+=real_spectrogram[i][k]*real_spectrogram[i][k];
-      psum+=spectrogram[i][k]*spectrogram[i][k];
-      // sum+=real_aperiodicity[i][k]*real_aperiodicity[i][k];
-      // psum+=aperiodicity[i][k]*aperiodicity[i][k];
+      // sum+=real_spectrogram[i][k]*real_spectrogram[i][k];
+      // psum+=spectrogram[i][k]*spectrogram[i][k];
+      sum+=real_aperiodicity[i][k]*real_aperiodicity[i][k];
+      psum+=aperiodicity[i][k]*aperiodicity[i][k];
     }
     cout << "(" << sum << ", " << psum << ")";
     // cout <<  ", " << psum ;
@@ -311,29 +428,29 @@ void DisplayInformation(int fs, int nbit, int x_length) {
 //       world_parameters->spectrogram);
 // }
 
-void AperiodicityEstimation(double *x, int x_length,
-    WorldParameters *world_parameters) {
-  D4COption option = {0};
-  InitializeD4COption(&option);
+// void AperiodicityEstimation(double *x, int x_length,
+//     WorldParameters *world_parameters) {
+//   D4COption option = {0};
+//   InitializeD4COption(&option);
 
-  // Comment was modified because it was confusing (2017/12/10).
-  // It is used to determine the aperiodicity in whole frequency band.
-  // D4C identifies whether the frame is voiced segment even if it had an F0.
-  // If the estimated value falls below the threshold,
-  // the aperiodicity in whole frequency band will set to 1.0.
-  // If you want to use the conventional D4C, please set the threshold to 0.0.
-  option.threshold = 0.85;
+//   // Comment was modified because it was confusing (2017/12/10).
+//   // It is used to determine the aperiodicity in whole frequency band.
+//   // D4C identifies whether the frame is voiced segment even if it had an F0.
+//   // If the estimated value falls below the threshold,
+//   // the aperiodicity in whole frequency band will set to 1.0.
+//   // If you want to use the conventional D4C, please set the threshold to 0.0.
+//   option.threshold = 0.85;
 
-  // Parameters setting and memory allocation.
-  world_parameters->aperiodicity = new double *[world_parameters->f0_length];
-  for (int i = 0; i < world_parameters->f0_length; ++i)
-    world_parameters->aperiodicity[i] =
-      new double[world_parameters->fft_size / 2 + 1];
+//   // Parameters setting and memory allocation.
+//   world_parameters->aperiodicity = new double *[world_parameters->f0_length];
+//   for (int i = 0; i < world_parameters->f0_length; ++i)
+//     world_parameters->aperiodicity[i] =
+//       new double[world_parameters->fft_size / 2 + 1];
 
-  D4C(x, x_length, world_parameters->fs, world_parameters->time_axis,
-      world_parameters->f0, world_parameters->f0_length,
-      world_parameters->fft_size, &option, world_parameters->aperiodicity);
-}
+//   D4C(x, x_length, world_parameters->fs, world_parameters->time_axis,
+//       world_parameters->f0, world_parameters->f0_length,
+//       world_parameters->fft_size, &option, world_parameters->aperiodicity);
+// }
 
 void ParameterModification(int argc, char *argv[], int fs, int f0_length,
     int fft_size, double *f0, double **spectrogram) {
@@ -374,39 +491,39 @@ void ParameterModification(int argc, char *argv[], int fs, int f0_length,
   delete[] freq_axis2;
 }
 
-void WaveformSynthesis(WorldParameters *world_parameters, int fs,
-    int y_length, double *y) {
-  // Synthesis by the aperiodicity
-  printf("\nSynthesis 1 (conventional algorithm)\n");
-  Synthesis(world_parameters->f0, world_parameters->f0_length,
-      world_parameters->spectrogram, world_parameters->aperiodicity,
-      world_parameters->fft_size, world_parameters->frame_period, fs,
-      y_length, y);
-}
+// void WaveformSynthesis(WorldParameters *world_parameters, int fs,
+//     int y_length, double *y) {
+//   // Synthesis by the aperiodicity
+//   printf("\nSynthesis 1 (conventional algorithm)\n");
+//   Synthesis(world_parameters->f0, world_parameters->f0_length,
+//       world_parameters->spectrogram, world_parameters->aperiodicity,
+//       world_parameters->fft_size, world_parameters->frame_period, fs,
+//       y_length, y);
+// }
 
-void WaveformSynthesis2(WorldParameters *world_parameters, int fs,
-    int y_length, double *y) {
-  printf("\nSynthesis 2 (All frames are added at the same time)\n");
+// void WaveformSynthesis2(WorldParameters *world_parameters, int fs,
+//     int y_length, double *y) {
+//   printf("\nSynthesis 2 (All frames are added at the same time)\n");
 
-  WorldSynthesizer synthesizer = { 0 };
-  int buffer_size = 64;
-  InitializeSynthesizer(world_parameters->fs, world_parameters->frame_period,
-      world_parameters->fft_size, buffer_size, 1, &synthesizer);
+//   WorldSynthesizer synthesizer = { 0 };
+//   int buffer_size = 64;
+//   InitializeSynthesizer(world_parameters->fs, world_parameters->frame_period,
+//       world_parameters->fft_size, buffer_size, 1, &synthesizer);
 
-  // All parameters are added at the same time.
-  AddParameters(world_parameters->f0, world_parameters->f0_length,
-      world_parameters->spectrogram, world_parameters->aperiodicity,
-      &synthesizer);
+//   // All parameters are added at the same time.
+//   AddParameters(world_parameters->f0, world_parameters->f0_length,
+//       world_parameters->spectrogram, world_parameters->aperiodicity,
+//       &synthesizer);
 
-  int index;
-  for (int i = 0; Synthesis2(&synthesizer) != 0; ++i) {
-    index = i * buffer_size;
-    for (int j = 0; j < buffer_size; ++j)
-      y[j + index] = synthesizer.buffer[j];
-  }
+//   int index;
+//   for (int i = 0; Synthesis2(&synthesizer) != 0; ++i) {
+//     index = i * buffer_size;
+//     for (int j = 0; j < buffer_size; ++j)
+//       y[j + index] = synthesizer.buffer[j];
+//   }
 
-  DestroySynthesizer(&synthesizer);
-}
+//   DestroySynthesizer(&synthesizer);
+// }
 
 void WaveformSynthesis3(WorldParameters *world_parameters, int fs,
     int y_length, double *y) {
@@ -546,10 +663,12 @@ int main(int argc, char *argv[]) {
   // wavwrite(y, y_length, fs, 16, filename);
 
   // mine
-  doit(x, x_length, fs);
+  // doit(x, x_length, fs);
+  double* y;
+  online(x, x_length, fs, y);
 
   // delete[] y;
-  delete[] x;
+  // delete[] x;
   // DestroyMemory(&world_parameters);
 
   printf("complete.\n");

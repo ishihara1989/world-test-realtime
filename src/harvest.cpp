@@ -1217,7 +1217,8 @@ static void HarvestGeneralBody(const double *x, int x_length, int fs,
 }  // namespace
 
 int GetSamplesForHarvest(int fs, int x_length, double frame_period) {
-  return static_cast<int>(1000.0 * x_length / fs / frame_period) + 1;
+  return static_cast<int>(ceil(1000.0 * x_length / fs / frame_period));
+  // return static_cast<int>(1000.0 * x_length / fs / frame_period) + 1;
 }
 
 void Harvest(const double *x, int x_length, int fs,

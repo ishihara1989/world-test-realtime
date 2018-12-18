@@ -95,7 +95,6 @@ void online(const double *x, int x_length, int fs, double *y){
 
   WorldSynthesizer synthesizer = { 0 };
   int buffer_size = 64;
-  InitializeSynthesizer(fs, frame_period, fft_size, buffer_size, 100, &synthesizer);
 
   int overlap = 2048;
   int shift=2048;
@@ -104,26 +103,29 @@ void online(const double *x, int x_length, int fs, double *y){
   int f0_length = GetSamplesForHarvest(fs, win_length, h_option.frame_period);
   int hfft = fft_size/2+1;
   int cut = overlap/2/frame_shift_samp;
-  double *f0 = new double[f0_length];
+  int ring_buffer_size = 4*f0_length;
+  double *f0 = new double[ring_buffer_size];
   double *time_axis = new double[f0_length];
-  double **spectrogram = new double *[f0_length];
-  double **aperiodicity = new double *[f0_length];
-  for(int i=0; i<f0_length; i++){
+  double **spectrogram = new double *[ring_buffer_size];
+  double **aperiodicity = new double *[ring_buffer_size];
+  for(int i=0; i<ring_buffer_size; i++){
     spectrogram[i] = new double[hfft];
     aperiodicity[i] = new double[hfft];
   }
-  y = new double[x_length];
+  
+  InitializeSynthesizer(fs, frame_period, fft_size, buffer_size, ring_buffer_size, &synthesizer);
 
   std::chrono::system_clock::time_point start = std::chrono::system_clock::now();
   int index = 0;
+  int ring_buffer_index = 0;
   for(int i=0; i<x_length-win_length;i+=shift){
-    Harvest(&x[i], win_length, fs, &h_option, time_axis, f0);
-    CheapTrick(&x[i], win_length, fs, time_axis, f0, f0_length, &c_option, spectrogram);
-    D4C(x, win_length, fs, time_axis, f0, f0_length, fft_size, &d_option, aperiodicity);
+    Harvest(&x[i], win_length, fs, &h_option, time_axis, &f0[ring_buffer_index]);
+    CheapTrick(&x[i], win_length, fs, time_axis, &f0[ring_buffer_index], f0_length, &c_option, &spectrogram[ring_buffer_index]);
+    D4C(&x[i], win_length, fs, time_axis, &f0[ring_buffer_index], f0_length, fft_size, &d_option, &aperiodicity[ring_buffer_index]);
 
     for (int ii = 0; ii < shift/frame_shift_samp;){
-      if (AddParameters(&f0[ii], 1,
-        &spectrogram[ii+cut], &aperiodicity[ii+cut],
+      if (AddParameters(&f0[ring_buffer_index+ii+cut], 1,
+        &spectrogram[ring_buffer_index+ii+cut], &aperiodicity[ring_buffer_index+ii+cut],
         &synthesizer) == 1) {++ii;}
 
       while (Synthesis2(&synthesizer) != 0) {
@@ -138,13 +140,16 @@ void online(const double *x, int x_length, int fs, double *y){
         break;
       }
     }
+
+    ring_buffer_index += f0_length;
+    if(ring_buffer_index>=ring_buffer_size) ring_buffer_index = 0;
   }
   std::chrono::system_clock::time_point end = std::chrono::system_clock::now();
   double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end-start).count();
   cout << "elapsed: " << elapsed/1000.0 << "[sec]" << endl;
 }
 
-void doit(double *x, int x_length, int fs){
+void doit(double *x, int x_length, int fs, double *y){
   HarvestOption h_option = { 0 };
   InitializeHarvestOption(&h_option);
   h_option.frame_period = 4.0;
@@ -199,11 +204,9 @@ void doit(double *x, int x_length, int fs){
   }
 
   WorldSynthesizer synthesizer = { 0 };
-  int buffer_size = 64;
+  int buffer_size = 256;
   InitializeSynthesizer(fs, h_option.frame_period,
-  c_option.fft_size, buffer_size, 100, &synthesizer);
-  int y_length = x_length;
-  double* y = new double[y_length];
+  c_option.fft_size, buffer_size, 200, &synthesizer);
 
   printf("\nAnalysis\n");
   Harvest(x, x_length, fs, &h_option, time_axis, f0);
@@ -263,11 +266,22 @@ void doit(double *x, int x_length, int fs){
 
     // synth
     
-    for (int ii = 0; ii < shift/frame_shift_samp;) {
+    for (int j = 0; j < shift/frame_shift_samp;) {
+      // works
       // Add one frame (i shows the frame index that should be added)
-      if (AddParameters(&tmp_f0[ii], 1,
-        &tmp_spectrogram[ii+cut], &tmp_aperiodicity[ii+cut],
-        &synthesizer) == 1) {++ii;}
+      if (AddParameters(&real_f0[i/frame_shift_samp+j+cut], 1,
+        &real_spectrogram[i/frame_shift_samp+j+cut], &real_aperiodicity[i/frame_shift_samp+j+cut],
+        &synthesizer) == 1) {++j;}
+
+      // not works
+      // tmp_f0[j+cut]=real_f0[i/frame_shift_samp+j+cut];
+      // for(int k=0;k<hfft;k++){
+      //   tmp_spectrogram[j+cut][k]=real_spectrogram[i/frame_shift_samp+j+cut][k];
+      //   tmp_aperiodicity[j+cut][k]=real_aperiodicity[i/frame_shift_samp+j+cut][k];
+      // }
+      // if (AddParameters(&tmp_f0[j+cut], 1,
+      //   &tmp_spectrogram[j+cut], &tmp_aperiodicity[j+cut],
+      //   &synthesizer) == 1) {++j;}
 
       // Synthesize speech with length of buffer_size sample.
       // It is repeated until the function returns 0
@@ -293,6 +307,28 @@ void doit(double *x, int x_length, int fs){
   // CheapTrick(x, x_length, fs, time_axis, real_f0, f0_length, &c_option, real_spectrogram);
 
   cout<<endl;
+  // for (int ii = 0; ii < f0_length;) {
+  //   // Add one frame (i shows the frame index that should be added)
+  //   if (AddParameters(&real_f0[ii], 1,
+  //     &real_spectrogram[ii], &real_aperiodicity[ii],
+  //     &synthesizer) == 1) {++ii;}
+
+  //   // Synthesize speech with length of buffer_size sample.
+  //   // It is repeated until the function returns 0
+  //   // (it suggests that the synthesizer cannot generate speech).
+  //   while (Synthesis2(&synthesizer) != 0) {
+  //     for (int j = 0; j < buffer_size; ++j){
+  //       y[j + index] = synthesizer.buffer[j];
+  //     }
+  //     index += buffer_size;
+  //   }
+
+  //   // Check the "Lock" (Please see synthesisrealtime.h)
+  //   if (IsLocked(&synthesizer) == 1) {
+  //     printf("Locked!\n");
+  //     break;
+  //   }
+  // }
 
   // f0 compair
   for(int i=0; i< f0_length; i++){
@@ -638,7 +674,7 @@ int main(int argc, char *argv[]) {
   // // 2: Example of real-time synthesis
   // // 3: Example of real-time synthesis (Ring buffer is efficiently used)
   // //---------------------------------------------------------------------------
-  // char filename[100];
+  char filename[100];
   // // The length of the output waveform
   // int y_length = static_cast<int>((world_parameters.f0_length - 1) *
   //   world_parameters.frame_period / 1000.0 * fs) + 1;
@@ -663,9 +699,14 @@ int main(int argc, char *argv[]) {
   // wavwrite(y, y_length, fs, 16, filename);
 
   // mine
-  // doit(x, x_length, fs);
-  double* y;
+  double* y = new double[x_length];
+  for(int k=0;k<x_length;k++){
+    y[k]=0.0;
+  }
+  //doit(x, x_length, fs, y);
   online(x, x_length, fs, y);
+  sprintf(filename, "%s", argv[2]);
+  wavwrite(y, x_length, fs, 16, filename);
 
   // delete[] y;
   // delete[] x;

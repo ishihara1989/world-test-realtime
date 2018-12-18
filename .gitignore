@@ -1,8 +1,10 @@
 # generated
 build/
+portaudio/
 
 # Test
 *.wav
+*.tgz
 
 # Visual Studio
 visualstudio/.vs/

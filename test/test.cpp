@@ -69,6 +69,44 @@ typedef struct {
 
 using namespace std;
 
+void convert(double f0mul, double spmul, double* f0, double** sp, double** ap, int f0_length, int hfft, double* buffer){
+  for(int i=0; i<f0_length; i++){
+    f0[i]*=f0mul;
+    //sp
+    for(int j=0; j<hfft; j++){
+      buffer[j]=log(sp[i][j]+1e-30);
+    }
+    for(int j=0; j<hfft; j++){
+      double target_index = j/spmul;
+      if(target_index>=hfft) {
+        for(int k=j; k<hfft; k++){
+          sp[i][j]=1e-30;
+        }
+        break;
+      }
+      int z=(int)target_index;
+      double r=target_index-z;
+      sp[i][j] = exp((1-r)*buffer[z]+r*buffer[z+1]);
+    }
+    //ap
+    for(int j=0; j<hfft; j++){
+      buffer[j]=log(ap[i][j]+1e-30);
+    }
+    for(int j=0; j<hfft; j++){
+      double target_index = j/spmul;
+      if(target_index>=hfft) {
+        for(int k=j; k<hfft; k++){
+          ap[i][j]=1.0;
+        }
+        break;
+      }
+      int z=(int)target_index;
+      double r=target_index-z;
+      ap[i][j] = exp((1-r)*buffer[z]+r*buffer[z+1]);
+    }
+  }
+}
+
 struct OnlineWorldParams{
   double* f0;
   double* time_axis;
@@ -112,6 +150,8 @@ void online(const double *x, int x_length, int fs, double *y){
     spectrogram[i] = new double[hfft];
     aperiodicity[i] = new double[hfft];
   }
+
+  double* interp_buffer = new double[hfft];
   
   InitializeSynthesizer(fs, frame_period, fft_size, buffer_size, ring_buffer_size, &synthesizer);
 
@@ -123,6 +163,7 @@ void online(const double *x, int x_length, int fs, double *y){
     CheapTrick(&x[i], win_length, fs, time_axis, &f0[ring_buffer_index], f0_length, &c_option, &spectrogram[ring_buffer_index]);
     D4C(&x[i], win_length, fs, time_axis, &f0[ring_buffer_index], f0_length, fft_size, &d_option, &aperiodicity[ring_buffer_index]);
 
+    convert(2.0,2.0,&f0[ring_buffer_index],&spectrogram[ring_buffer_index],&aperiodicity[ring_buffer_index],f0_length,hfft,interp_buffer);
     for (int ii = 0; ii < shift/frame_shift_samp;){
       if (AddParameters(&f0[ring_buffer_index+ii+cut], 1,
         &spectrogram[ring_buffer_index+ii+cut], &aperiodicity[ring_buffer_index+ii+cut],

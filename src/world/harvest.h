@@ -7,6 +7,7 @@
 #define WORLD_HARVEST_H_
 
 #include "world/macrodefinitions.h"
+#include "world/fft.h"
 
 WORLD_BEGIN_C_DECLS
 
@@ -18,6 +19,26 @@ typedef struct {
   double f0_ceil;
   double frame_period;
 } HarvestOption;
+
+typedef struct {
+  // Harvest
+  double *basic_f0;
+  double *basic_temporal_positions;
+  //HarvestGeneralBody
+  int number_of_channels;
+  double *boundary_f0_list;
+  double *y;
+  fft_complex *y_spectrum;
+  double **f0_candidates;
+  double **f0_candidates_score;
+  double *best_f0_contour;
+} HarvestBuffer;
+
+void HarvestNoMemory(const double *x, int x_length, int fs,
+  const HarvestOption *option, double *temporal_positions, double *f0,
+  HarvestBuffer *buffer);
+
+void InitializeHarvestBuffer(int x_length, int fs, const HarvestOption *option, HarvestBuffer *buffer);
 
 //-----------------------------------------------------------------------------
 // Harvest

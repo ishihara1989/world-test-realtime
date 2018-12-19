@@ -8,12 +8,14 @@
 #include "world/harvest.h"
 
 #include <math.h>
+#include <iostream> // debug
 
 #include "world/common.h"
 #include "world/constantnumbers.h"
 #include "world/fft.h"
 #include "world/matlabfunctions.h"
 
+using namespace std; //debug
 //-----------------------------------------------------------------------------
 // struct for RawEventByHarvest()
 // "negative" means "zero-crossing point going from positive to negative"
@@ -336,10 +338,11 @@ static void GetRawF0Candidates(const double *boundary_f0_list,
     const double *temporal_positions, int f0_length,
     const fft_complex *y_spectrum, int fft_size, double f0_floor,
     double f0_ceil, double **raw_f0_candidates) {
-  for (int i = 0; i < number_of_bands; ++i)
+  for (int i = 0; i < number_of_bands; ++i){
     GetF0CandidateFromRawEvent(boundary_f0_list[i], actual_fs, y_spectrum,
         y_length, fft_size, f0_floor, f0_ceil, temporal_positions, f0_length,
         raw_f0_candidates[i]);
+  }
 }
 
 //-----------------------------------------------------------------------------
@@ -1123,7 +1126,6 @@ static int HarvestGeneralBodySub(const double *boundary_f0_list,
   double **raw_f0_candidates = new double *[number_of_channels];
   for (int i = 0; i < number_of_channels; ++i)
     raw_f0_candidates[i] = new double[f0_length];
-
   GetRawF0Candidates(boundary_f0_list, number_of_channels,
       actual_fs, y_length, temporal_positions, f0_length, y_spectrum,
       fft_size, f0_floor, f0_ceil, raw_f0_candidates);
@@ -1214,6 +1216,67 @@ static void HarvestGeneralBody(const double *x, int x_length, int fs,
   delete[] boundary_f0_list;
 }
 
+static void HarvestGeneralBodyNoMemory(const double *x, int x_length, int fs,
+    int frame_period, double f0_floor, double f0_ceil,
+    double channels_in_octave, int speed, double *temporal_positions,
+    double *f0, HarvestBuffer *buffer) {
+  double adjusted_f0_floor = f0_floor * 0.9;
+  double adjusted_f0_ceil = f0_ceil * 1.1;
+  int number_of_channels =
+    1 + static_cast<int>(log(adjusted_f0_ceil / adjusted_f0_floor) /
+    world::kLog2 * channels_in_octave);
+  // double *boundary_f0_list = new double[number_of_channels];
+  // for (int i = 0; i < number_of_channels; ++i)
+  //   buffer->boundary_f0_list[i] =
+  //   adjusted_f0_floor * pow(2.0, (i + 1) / channels_in_octave);
+
+  // normalization
+  int decimation_ratio = MyMaxInt(MyMinInt(speed, 12), 1);
+  int y_length =
+    static_cast<int>(ceil(static_cast<double>(x_length) / decimation_ratio));
+  double actual_fs = static_cast<double>(fs) / decimation_ratio;
+  int fft_size = GetSuitableFFTSize(y_length + 5 +
+    2 * static_cast<int>(2.0 * actual_fs / buffer->boundary_f0_list[0]));
+
+  // Calculation of the spectrum used for the f0 estimation
+  // double *y = new double[fft_size];
+  // fft_complex *y_spectrum = new fft_complex[fft_size];
+  GetWaveformAndSpectrum(x, x_length, y_length, actual_fs, fft_size,
+      decimation_ratio, buffer->y, buffer->y_spectrum);
+
+  int f0_length = GetSamplesForHarvest(fs, x_length, frame_period);
+  for (int i = 0; i < f0_length; ++i) {
+    temporal_positions[i] = i * frame_period / 1000.0;
+    f0[i] = 0.0;
+  }
+
+  int overlap_parameter = 7;
+  int max_candidates =
+    matlab_round(number_of_channels / 10.0) * overlap_parameter;
+  // double **f0_candidates = new double *[f0_length];
+  // double **f0_candidates_score = new double *[f0_length];
+  // for (int i = 0; i < f0_length; ++i) {
+  //   f0_candidates[i] = new double[max_candidates];
+  //   f0_candidates_score[i] = new double[max_candidates];
+  // }
+
+  int number_of_candidates = HarvestGeneralBodySub(buffer->boundary_f0_list,
+    number_of_channels, f0_length, actual_fs, y_length, temporal_positions,
+    buffer->y_spectrum, fft_size, f0_floor, f0_ceil, max_candidates, buffer->f0_candidates) *
+    overlap_parameter;
+
+  RefineF0Candidates(buffer->y, y_length, actual_fs, temporal_positions, f0_length,
+      number_of_candidates, f0_floor, f0_ceil, buffer->f0_candidates,
+      buffer->f0_candidates_score);
+  RemoveUnreliableCandidates(f0_length, number_of_candidates,
+      buffer->f0_candidates, buffer->f0_candidates_score);
+
+  // double *best_f0_contour = new double[f0_length];
+  FixF0Contour(buffer->f0_candidates, buffer->f0_candidates_score, f0_length,
+      number_of_candidates, buffer->best_f0_contour);
+  SmoothF0Contour(buffer->best_f0_contour, f0_length, f0);
+}
+
 }  // namespace
 
 int GetSamplesForHarvest(int fs, int x_length, double frame_period) {
@@ -1253,6 +1316,83 @@ void Harvest(const double *x, int x_length, int fs,
 
   delete[] basic_f0;
   delete[] basic_temporal_positions;
+}
+
+void HarvestNoMemory(const double *x, int x_length, int fs,
+  const HarvestOption *option, double *temporal_positions, double *f0,
+  HarvestBuffer *buffer){
+  double target_fs = 8000.0;
+  int dimension_ratio = matlab_round(fs / target_fs);
+  double channels_in_octave = 40;
+
+  if (option->frame_period == 1.0) {
+    HarvestGeneralBodyNoMemory(x, x_length, fs, 1, option->f0_floor,
+        option->f0_ceil, channels_in_octave, dimension_ratio,
+        temporal_positions, f0, buffer);
+    return;
+  }
+
+  int basic_frame_period = 1;
+  int basic_f0_length =
+    GetSamplesForHarvest(fs, x_length, basic_frame_period);
+  // double *basic_f0 = new double[basic_f0_length];
+  // double *basic_temporal_positions = new double[basic_f0_length];
+  HarvestGeneralBodyNoMemory(x, x_length, fs, basic_frame_period, option->f0_floor,
+      option->f0_ceil, channels_in_octave, dimension_ratio,
+      buffer->basic_temporal_positions, buffer->basic_f0, buffer);
+
+  int f0_length = GetSamplesForHarvest(fs, x_length, option->frame_period);
+  for (int i = 0; i < f0_length; ++i) {
+    temporal_positions[i] = i * option->frame_period / 1000.0;
+    f0[i] = buffer->basic_f0[MyMinInt(basic_f0_length - 1,
+      matlab_round(temporal_positions[i] * 1000.0))];
+  }
+}
+
+void InitializeHarvestBuffer(int x_length, int fs, const HarvestOption *option, HarvestBuffer *buffer){
+  // Harvest
+  int basic_frame_period = 1;
+  int basic_f0_length =
+    GetSamplesForHarvest(fs, x_length, basic_frame_period);
+  buffer->basic_f0 = new double[basic_f0_length];
+  buffer->basic_temporal_positions = new double[basic_f0_length];
+
+  //HarvestGeneralBody
+  double adjusted_f0_floor = option->f0_floor * 0.9;
+  double adjusted_f0_ceil = option->f0_ceil * 1.1;
+  double channels_in_octave = 40;
+  int number_of_channels =
+    1 + static_cast<int>(log(adjusted_f0_ceil / adjusted_f0_floor) /
+    world::kLog2 * channels_in_octave);
+
+  buffer->boundary_f0_list = new double[number_of_channels];
+  for (int i = 0; i < number_of_channels; ++i){
+    buffer->boundary_f0_list[i] =
+    adjusted_f0_floor * pow(2.0, (i + 1) / channels_in_octave);
+  }
+  double target_fs = 8000.0;
+  int speed = matlab_round(fs / target_fs);
+  int decimation_ratio = MyMaxInt(MyMinInt(speed, 12), 1);
+  int y_length =
+    static_cast<int>(ceil(static_cast<double>(x_length) / decimation_ratio));
+  double actual_fs = static_cast<double>(fs) / decimation_ratio;
+  int fft_size = GetSuitableFFTSize(y_length + 5 +
+    2 * static_cast<int>(2.0 * actual_fs / buffer->boundary_f0_list[0]));
+  buffer->y = new double[fft_size];
+  buffer->y_spectrum = new fft_complex[fft_size];
+
+  int f0_length = GetSamplesForHarvest(fs, x_length, 1.0);
+  int overlap_parameter = 7;
+  int max_candidates =
+    matlab_round(number_of_channels / 10.0) * overlap_parameter;
+  buffer->f0_candidates = new double *[f0_length];
+  buffer->f0_candidates_score = new double *[f0_length];
+  for (int i = 0; i < f0_length; ++i) {
+    buffer->f0_candidates[i] = new double[max_candidates];
+    buffer->f0_candidates_score[i] = new double[max_candidates];
+  }
+
+  buffer->best_f0_contour = new double[f0_length];
 }
 
 void InitializeHarvestOption(HarvestOption *option) {

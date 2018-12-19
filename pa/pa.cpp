@@ -10,7 +10,7 @@
 #include "world/synthesisrealtime.h"
 
 #include<stdio.h>
-#include<math.h>
+#include<cmath>
 #include"portaudio.h"
 #define Fs 16000 //サンプリング周波数
 #define FRAMES_PER_BUFFER 2048 //バッファサイズ
@@ -54,6 +54,8 @@ struct WorldParams{
   double *time_axis;
   double **spectrogram;
   double **aperiodicity;
+  double *interp_buffer;
+  HarvestBuffer h_buffer;
   WorldSynthesizer synthesizer;
   WorldParams();
   void initParams(const WorldOptions &options);
@@ -117,86 +119,47 @@ void WorldParams::initParams(const WorldOptions &options){
       aperiodicity[i][j]=1e-16;
     }
   }
+  interp_buffer = new double[options.hfft];
+
+  InitializeHarvestBuffer(options.win_length, options.fs, &options.h_option, &this->h_buffer);
   InitializeSynthesizer(options.fs, options.frame_period, options.fft_size, options.buffer_size, options.ring_buffer_size, &synthesizer);
 }
 
-void online(const double *x, int x_length, int fs, double *y){
-  double frame_period = 4.0;
-  double f0_floor = 80.0;
-  double c_f0_floor = 71.0;
-  HarvestOption h_option = { 0 };
-  CheapTrickOption c_option = {0};
-  D4COption d_option = {0};
-  InitializeHarvestOption(&h_option);
-  h_option.frame_period = frame_period;
-  h_option.f0_floor = f0_floor;
-  InitializeCheapTrickOption(fs, &c_option);
-  c_option.f0_floor = c_f0_floor;
-  int fft_size = GetFFTSizeForCheapTrick(fs, &c_option);
-  c_option.fft_size = fft_size;
-  InitializeD4COption(&d_option);
-  d_option.threshold = 0.85;
-
-  WorldSynthesizer synthesizer = { 0 };
-  int buffer_size = 64;
-
-  int overlap = 2048;
-  int shift=2048;
-  int frame_shift_samp = static_cast<int>(frame_period*fs/1000);
-  int win_length=shift+overlap;
-  int f0_length = GetSamplesForHarvest(fs, win_length, h_option.frame_period);
-  int hfft = fft_size/2+1;
-  int cut = overlap/2/frame_shift_samp;
-  int ring_buffer_size = 4*f0_length;
-  double *f0 = new double[ring_buffer_size];
-  double *time_axis = new double[f0_length];
-  double **spectrogram = new double *[ring_buffer_size];
-  double **aperiodicity = new double *[ring_buffer_size];
-  for(int i=0; i<ring_buffer_size; i++){
-    spectrogram[i] = new double[hfft];
-    aperiodicity[i] = new double[hfft];
-  }
-  
-  InitializeSynthesizer(fs, frame_period, fft_size, buffer_size, ring_buffer_size, &synthesizer);
-
-  std::chrono::system_clock::time_point start = std::chrono::system_clock::now();
-  int index = 0;
-  int ring_buffer_index = 0;
-  for(int i=0; i<x_length-win_length;i+=shift){
-    Harvest(&x[i], win_length, fs, &h_option, time_axis, &f0[ring_buffer_index]);
-    CheapTrick(&x[i], win_length, fs, time_axis, &f0[ring_buffer_index], f0_length, &c_option, &spectrogram[ring_buffer_index]);
-    D4C(&x[i], win_length, fs, time_axis, &f0[ring_buffer_index], f0_length, fft_size, &d_option, &aperiodicity[ring_buffer_index]);
-
-    for (int ii = 0; ii < shift/frame_shift_samp;){
-      if (AddParameters(&f0[ring_buffer_index+ii+cut], 1,
-        &spectrogram[ring_buffer_index+ii+cut], &aperiodicity[ring_buffer_index+ii+cut],
-        &synthesizer) == 1) {++ii;}
-
-      while (Synthesis2(&synthesizer) != 0) {
-        for (int j = 0; j < buffer_size; ++j){
-          y[j + index] = synthesizer.buffer[j];
-        }
-        index += buffer_size;
-      }
-
-      if (IsLocked(&synthesizer) == 1) {
-        printf("Locked!\n");
-        break;
-      }
-    }
-
-    ring_buffer_index += f0_length;
-    if(ring_buffer_index>=ring_buffer_size) ring_buffer_index = 0;
-  }
-  std::chrono::system_clock::time_point end = std::chrono::system_clock::now();
-  double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end-start).count();
-  cout << "elapsed: " << elapsed/1000.0 << "[sec]" << endl;
-}
-
-void convert(double f0mul, double spmul, double* f0, double** sp, double** ap, int f0_length, int hfft){
+void convert(double f0mul, double spmul, double* f0, double** sp, double** ap, int f0_length, int hfft, double* buffer){
   for(int i=0; i<f0_length; i++){
     f0[i]*=f0mul;
-    cout << f0[i] << endl;
+    //sp
+    for(int j=0; j<hfft; j++){
+      buffer[j]=log(sp[i][j]+1e-30);
+    }
+    for(int j=0; j<hfft; j++){
+      double target_index = j/spmul;
+      if(target_index>=hfft) {
+        for(int k=j; k<hfft; k++){
+          sp[i][j]=1e-30;
+        }
+        break;
+      }
+      int z=(int)target_index;
+      double r=target_index-z;
+      sp[i][j] = exp((1-r)*buffer[z]+r*buffer[z+1]);
+    }
+    //ap
+    for(int j=0; j<hfft; j++){
+      buffer[j]=log(ap[i][j]+1e-30);
+    }
+    for(int j=0; j<hfft; j++){
+      double target_index = j/spmul;
+      if(target_index>=hfft) {
+        for(int k=j; k<hfft; k++){
+          ap[i][j]=1.0;
+        }
+        break;
+      }
+      int z=(int)target_index;
+      double r=target_index-z;
+      ap[i][j] = exp((1-r)*buffer[z]+r*buffer[z+1]);
+    }
   }
 }
 
@@ -230,9 +193,9 @@ static int dsp(const void *inputBuffer, //入力
   int cut = data->options.cut;
   int buffer_size = data->options.buffer_size;
 
-  // for( i=0; i<framesPerBuffer; i++){
-  //     out[i] = in[i];
-  // }
+  for( i=0; i<framesPerBuffer; i++){
+      out[i] = in[i];
+  }
   // return 0;
 
   // shift and copy
@@ -244,13 +207,12 @@ static int dsp(const void *inputBuffer, //入力
   }
 
   // analysis
-  Harvest(buffer, win_length, fs, &data->options.h_option, time_axis, &f0[ring_buffer_index]);
-  
+  HarvestNoMemory(buffer, win_length, fs, &data->options.h_option, time_axis, &f0[ring_buffer_index], &data->h_buffer);
   CheapTrick(buffer, win_length, fs, time_axis, &f0[ring_buffer_index], f0_length, &data->options.c_option, &spectrogram[ring_buffer_index]);
   D4C(buffer, win_length, fs, time_axis, &f0[ring_buffer_index], f0_length, fft_size, &data->options.d_option, &aperiodicity[ring_buffer_index]);
-
+  
   // convert
-  convert(2.0, 1.2, &f0[ring_buffer_index], spectrogram, aperiodicity, f0_length, data->options.hfft);
+  convert(2.0, 1.25, &f0[ring_buffer_index], &spectrogram[ring_buffer_index], &aperiodicity[ring_buffer_index], f0_length, data->options.hfft, data->interp_buffer);
 
   // synthesis
   index = 0;

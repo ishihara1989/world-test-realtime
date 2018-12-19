@@ -1,6 +1,6 @@
-CXX = g++
-C99 = gcc -std=c99
-LINK = g++
+CXX = g++-8
+C99 = gcc-8 -std=c99
+LINK = g++-8
 AR = ar
 #DEBUG_FLAG=-g
 CXXFLAGS = -O1 -Wall -fPIC $(DEBUG_FLAG)
@@ -10,16 +10,19 @@ OUT_DIR = ./build
 OBJS = $(OUT_DIR)/objs/world/cheaptrick.o $(OUT_DIR)/objs/world/common.o $(OUT_DIR)/objs/world/d4c.o $(OUT_DIR)/objs/world/dio.o $(OUT_DIR)/objs/world/fft.o $(OUT_DIR)/objs/world/harvest.o $(OUT_DIR)/objs/world/matlabfunctions.o $(OUT_DIR)/objs/world/stonemask.o $(OUT_DIR)/objs/world/synthesis.o $(OUT_DIR)/objs/world/synthesisrealtime.o
 LIBS =
 
-all: default test
+all: default test pa
+
+pa: $(OUT_DIR)/objs/pa/pa.o $(OUT_DIR)/libworld.a
+	$(LINK) $(CXXFLAGS) $(OUT_DIR)/objs/pa/pa.o $(OUT_DIR)/libworld.a -lportaudio -o $(OUT_DIR)/pa.exe
 
 ###############################################################################################################
 ### Tests
 ###############################################################################################################
-test: $(OUT_DIR)/test
+test: $(OUT_DIR)/test.exe
 # test: $(OUT_DIR)/test $(OUT_DIR)/ctest
 
 test_OBJS=$(OUT_DIR)/objs/tools/audioio.o $(OUT_DIR)/objs/test/test.o
-$(OUT_DIR)/test: $(OUT_DIR)/libworld.a $(test_OBJS)
+$(OUT_DIR)/test.exe: $(OUT_DIR)/libworld.a $(test_OBJS)
 	$(LINK) $(CXXFLAGS) -o $(OUT_DIR)/test.exe $(test_OBJS) $(OUT_DIR)/libworld.a -lm
 
 ctest_OBJS=$(OUT_DIR)/objs/tools/audioio.o $(OUT_DIR)/objs/test/ctest.o
@@ -60,6 +63,14 @@ $(OUT_DIR)/objs/test/%.o : test/%.c
 $(OUT_DIR)/objs/test/%.o : test/%.cpp
 	mkdir -p $(OUT_DIR)/objs/test
 	$(CXX) $(CXXFLAGS) -Isrc -Itools -o "$@" -c "$<"
+
+$(OUT_DIR)/objs/pa/%.o : pa/%.c
+	mkdir -p $(OUT_DIR)/objs/pa
+	$(C99) $(CFLAGS) -Isrc -o "$@" -c "$<"
+
+$(OUT_DIR)/objs/pa/%.o : pa/%.cpp
+	mkdir -p $(OUT_DIR)/objs/pa
+	$(CXX) $(CXXFLAGS) -Isrc -o "$@" -c "$<"
 
 $(OUT_DIR)/objs/tools/%.o : tools/%.cpp
 	mkdir -p $(OUT_DIR)/objs/tools

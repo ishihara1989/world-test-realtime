@@ -5,6 +5,8 @@
 
 #include "world/d4c.h"
 #include "world/harvest.h"
+#include "world/dio.h"
+#include "world/stonemask.h"
 // #include "world/matlabfunctions.h"
 #include "world/cheaptrick.h"
 #include "world/synthesisrealtime.h"
@@ -37,6 +39,7 @@ struct WorldOptions{
   double f0_floor;
   double c_f0_floor;
   HarvestOption h_option;
+  DioOption dio_option;
   CheapTrickOption c_option;
   D4COption d_option;
 
@@ -50,6 +53,7 @@ struct WorldParams{
   WorldOptions options;
   
   double *buffer;
+  double *pre_f0;
   double *f0;
   double *time_axis;
   double **spectrogram;
@@ -77,6 +81,7 @@ WorldOptions::WorldOptions(int fs){
   this->f0_floor = 80.0;
   this->c_f0_floor = 71.0;
   this->h_option = {0};
+  this->dio_option = {0};
   this->c_option = {0};
   this->d_option = {0};
 }
@@ -85,6 +90,11 @@ void WorldOptions::defaultOptions(){
   InitializeHarvestOption(&this->h_option);
   this->h_option.frame_period = this->frame_period;
   this->h_option.f0_floor = this->f0_floor;
+  InitializeDioOption(&this->dio_option);
+  this->dio_option.frame_period = this->frame_period;
+  this->dio_option.speed = 1;
+  // dio_option.f0_floor = 40.0;
+  this->dio_option.allowed_range = 0.1;
   InitializeCheapTrickOption(fs, &this->c_option);
   this->c_option.f0_floor = this->c_f0_floor;
   this->fft_size = GetFFTSizeForCheapTrick(fs, &this->c_option);
@@ -106,11 +116,13 @@ void WorldParams::initParams(const WorldOptions &options){
   for(int i=0;i<options.win_length;i++){
     buffer[i]=0.0;
   }
+  pre_f0 = new double[options.ring_buffer_size];
   f0 = new double[options.ring_buffer_size];
   time_axis = new double[options.f0_length];
   spectrogram = new double *[options.ring_buffer_size];
   aperiodicity = new double *[options.ring_buffer_size];
   for(int i=0; i<options.ring_buffer_size; i++){
+    pre_f0[i]=0.0;
     f0[i]=0.0;
     spectrogram[i] = new double[options.hfft];
     aperiodicity[i] = new double[options.hfft];
@@ -183,6 +195,7 @@ static int dsp(const void *inputBuffer, //入力
   double* buffer = data->buffer;
   int fs = data->options.fs;
   double *time_axis = data->time_axis;
+  double *pre_f0 = data->pre_f0;
   double *f0 = data->f0;
   int ring_buffer_index = data->ring_buffer_index;
   int f0_length = data->options.f0_length;
@@ -207,7 +220,10 @@ static int dsp(const void *inputBuffer, //入力
   }
 
   // analysis
-  HarvestNoMemory(buffer, win_length, fs, &data->options.h_option, time_axis, &f0[ring_buffer_index], &data->h_buffer);
+  // HarvestNoMemory(buffer, win_length, fs, &data->options.h_option, time_axis, &f0[ring_buffer_index], &data->h_buffer);
+  Dio(buffer, win_length, fs, &data->options.dio_option, time_axis, &pre_f0[ring_buffer_index]);
+  StoneMask(buffer, win_length, fs, time_axis,
+      &pre_f0[ring_buffer_index], f0_length, &f0[ring_buffer_index]);
   CheapTrick(buffer, win_length, fs, time_axis, &f0[ring_buffer_index], f0_length, &data->options.c_option, &spectrogram[ring_buffer_index]);
   D4C(buffer, win_length, fs, time_axis, &f0[ring_buffer_index], f0_length, fft_size, &data->options.d_option, &aperiodicity[ring_buffer_index]);
   

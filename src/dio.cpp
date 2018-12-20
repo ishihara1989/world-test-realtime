@@ -636,7 +636,8 @@ static void DioGeneralBody(const double *x, int x_length, int fs,
 }  // namespace
 
 int GetSamplesForDIO(int fs, int x_length, double frame_period) {
-  return static_cast<int>(1000.0 * x_length / fs / frame_period) + 1;
+  return static_cast<int>(ceil(1000.0 * x_length / fs / frame_period));
+  // return static_cast<int>(1000.0 * x_length / fs / frame_period) + 1;
 }
 
 void Dio(const double *x, int x_length, int fs, const DioOption *option,

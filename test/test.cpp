@@ -119,11 +119,18 @@ void online(const double *x, int x_length, int fs, double *y){
   double f0_floor = 80.0;
   double c_f0_floor = 71.0;
   HarvestOption h_option = { 0 };
+  HarvestBuffer h_buffer;
+  DioOption dio_option = {0};
   CheapTrickOption c_option = {0};
   D4COption d_option = {0};
   InitializeHarvestOption(&h_option);
   h_option.frame_period = frame_period;
   h_option.f0_floor = f0_floor;
+  InitializeDioOption(&dio_option);
+  dio_option.frame_period = 4.0;
+  dio_option.speed = 1;
+  dio_option.f0_floor = 40.0;
+  dio_option.allowed_range = 0.1;
   InitializeCheapTrickOption(fs, &c_option);
   c_option.f0_floor = c_f0_floor;
   int fft_size = GetFFTSizeForCheapTrick(fs, &c_option);
@@ -143,6 +150,7 @@ void online(const double *x, int x_length, int fs, double *y){
   int cut = overlap/2/frame_shift_samp;
   int ring_buffer_size = 4*f0_length;
   double *f0 = new double[ring_buffer_size];
+  double *pre_f0 = new double[ring_buffer_size];
   double *time_axis = new double[f0_length];
   double **spectrogram = new double *[ring_buffer_size];
   double **aperiodicity = new double *[ring_buffer_size];
@@ -150,6 +158,8 @@ void online(const double *x, int x_length, int fs, double *y){
     spectrogram[i] = new double[hfft];
     aperiodicity[i] = new double[hfft];
   }
+
+  InitializeHarvestBuffer(win_length, fs, &h_option, &h_buffer);
 
   double* interp_buffer = new double[hfft];
   
@@ -159,11 +169,15 @@ void online(const double *x, int x_length, int fs, double *y){
   int index = 0;
   int ring_buffer_index = 0;
   for(int i=0; i<x_length-win_length;i+=shift){
-    Harvest(&x[i], win_length, fs, &h_option, time_axis, &f0[ring_buffer_index]);
+    // HarvestNoMemory(&x[i], win_length, fs, &h_option, time_axis, &f0[ring_buffer_index], &h_buffer);
+    // Harvest(&x[i], win_length, fs, &h_option, time_axis, &f0[ring_buffer_index]);
+    Dio(&x[i], win_length, fs, &dio_option, time_axis, &pre_f0[ring_buffer_index]);
+    StoneMask(x, win_length, fs, time_axis,
+        &pre_f0[ring_buffer_index], f0_length, &f0[ring_buffer_index]);
     CheapTrick(&x[i], win_length, fs, time_axis, &f0[ring_buffer_index], f0_length, &c_option, &spectrogram[ring_buffer_index]);
     D4C(&x[i], win_length, fs, time_axis, &f0[ring_buffer_index], f0_length, fft_size, &d_option, &aperiodicity[ring_buffer_index]);
 
-    convert(2.0,2.0,&f0[ring_buffer_index],&spectrogram[ring_buffer_index],&aperiodicity[ring_buffer_index],f0_length,hfft,interp_buffer);
+    convert(2.0,1.2,&f0[ring_buffer_index],&spectrogram[ring_buffer_index],&aperiodicity[ring_buffer_index],f0_length,hfft,interp_buffer);
     for (int ii = 0; ii < shift/frame_shift_samp;){
       if (AddParameters(&f0[ring_buffer_index+ii+cut], 1,
         &spectrogram[ring_buffer_index+ii+cut], &aperiodicity[ring_buffer_index+ii+cut],
@@ -196,20 +210,32 @@ void doit(double *x, int x_length, int fs, double *y){
   h_option.frame_period = 4.0;
   h_option.f0_floor = 80.0;
 
+  //Dio
+  DioOption dio_option = {0};
+  InitializeDioOption(&dio_option);
+  dio_option.frame_period = 4.0;
+  dio_option.speed = 1;
+  dio_option.f0_floor = 40.0;
+  dio_option.allowed_range = 0.1;
+
   int overlap = 2048;
   int shift=2048;
   int frame_shift_samp = 4*fs/1000;
   int win_length=shift+overlap;
-  int f0_length = GetSamplesForHarvest(fs, x_length, h_option.frame_period);
+  // int f0_length = GetSamplesForHarvest(fs, x_length, h_option.frame_period);
+  int f0_length = GetSamplesForDIO(fs, x_length, h_option.frame_period);
   cout << f0_length << ", " << x_length << endl;
-  int real_f0_length = GetSamplesForHarvest(fs, win_length, h_option.frame_period);
+  // int real_f0_length = GetSamplesForHarvest(fs, win_length, h_option.frame_period);
+  int real_f0_length = GetSamplesForDIO(fs, win_length, h_option.frame_period);
   cout << "real: " << real_f0_length << endl;
 
   double *f0 = new double[f0_length];
+  double *refined_f0 = new double[f0_length];
   double *time_axis = new double[f0_length];
 
   double *real_f0=new double[f0_length+real_f0_length];
-  double *tmp_f0 = new double[real_f0_length];
+  double *tmp_f0 = new double[2*real_f0_length];
+  double *pre_f0 = new double[2*real_f0_length];
   CheapTrickOption c_option = {0};
   InitializeCheapTrickOption(fs, &c_option);
   c_option.f0_floor = 71.0;
@@ -217,7 +243,7 @@ void doit(double *x, int x_length, int fs, double *y){
   cout << "Cheap Trick FFT length: "<< c_option.fft_size<<endl;
   double **spectrogram = new double *[f0_length];
   double **real_spectrogram = new double *[f0_length+real_f0_length];
-  double **tmp_spectrogram = new double *[real_f0_length];
+  double **tmp_spectrogram = new double *[2*real_f0_length];
   int hfft = c_option.fft_size/2+1;
   for(int i=0; i<f0_length; i++){
     spectrogram[i] = new double[hfft];
@@ -225,7 +251,7 @@ void doit(double *x, int x_length, int fs, double *y){
   for(int i=0; i<f0_length+real_f0_length; i++){
     real_spectrogram[i] = new double[hfft];
   }
-  for(int i=0; i<real_f0_length; i++){
+  for(int i=0; i<2*real_f0_length; i++){
     tmp_spectrogram[i] = new double[hfft];
   }
   D4COption d_option = {0};
@@ -233,14 +259,14 @@ void doit(double *x, int x_length, int fs, double *y){
   d_option.threshold = 0.85;
   double **aperiodicity = new double *[f0_length];
   double **real_aperiodicity = new double *[f0_length+real_f0_length];
-  double **tmp_aperiodicity = new double *[real_f0_length];
+  double **tmp_aperiodicity = new double *[2*real_f0_length];
   for(int i=0; i<f0_length; i++){
     aperiodicity[i] = new double[hfft];
   }
   for(int i=0; i<f0_length+real_f0_length; i++){
     real_aperiodicity[i] = new double[hfft];
   }
-  for(int i=0; i<real_f0_length; i++){
+  for(int i=0; i<2*real_f0_length; i++){
     tmp_aperiodicity[i] = new double[hfft];
   }
 
@@ -250,7 +276,13 @@ void doit(double *x, int x_length, int fs, double *y){
   c_option.fft_size, buffer_size, 200, &synthesizer);
 
   printf("\nAnalysis\n");
-  Harvest(x, x_length, fs, &h_option, time_axis, f0);
+  // Harvest(x, x_length, fs, &h_option, time_axis, f0);
+  Dio(x, x_length, fs, &dio_option, time_axis, f0);
+  StoneMask(x, x_length, fs, time_axis,
+      f0, f0_length, refined_f0);
+  for(int i=0;i<f0_length;i++){
+    f0[i]=refined_f0[i];
+  }
   CheapTrick(x, x_length, fs, time_axis, f0, f0_length, &c_option, spectrogram);
   D4C(x, x_length, fs, time_axis, f0, f0_length, c_option.fft_size, &d_option, aperiodicity);
   cout<<endl;
@@ -263,20 +295,30 @@ void doit(double *x, int x_length, int fs, double *y){
   int index = 0;
   for(int i=0; i<x_length-win_length;i+=shift){
     // F0
-    Harvest(&x[i], win_length, fs, &h_option, time_axis, tmp_f0);
+    // Harvest(&x[i], win_length, fs, &h_option, time_axis, tmp_f0);
+    Dio(&x[i], win_length, fs, &dio_option, time_axis, pre_f0);
+    // cout << "dio" << endl;
+    StoneMask(&x[i], win_length, fs, time_axis,
+      pre_f0, f0_length, tmp_f0);
+    // cout << "dio2" << endl;
     for(int j=0; j<shift/frame_shift_samp; j++){
       real_f0[i/frame_shift_samp+j+cut]=tmp_f0[j+cut];
+      // cout << tmp_f0[j+cut] << ",";
     }
+    // cout << endl;
     if(i==0){
       for(int j=0; j<cut; j++){
         real_f0[j]=tmp_f0[j];
       }
     }
+    // cout << "sp" << endl;
 
     // Sp
     // SpectralEnvelopeEstimation(x, x_length, &world_parameters);
     CheapTrick(&x[i], win_length, fs, time_axis, tmp_f0, real_f0_length, &c_option, tmp_spectrogram);
+    // cout << "sp" << endl;
     for(int j=0; j<shift/frame_shift_samp; j++){
+      // cout << j << ",";
       for(int k=0;k<hfft; k++){
         real_spectrogram[i/frame_shift_samp+j+cut][k]=tmp_spectrogram[j+cut][k];
       }
@@ -386,10 +428,10 @@ void doit(double *x, int x_length, int fs, double *y){
       // cout << "k: " << k << ", ";
       // sum+=(real_spectrogram[i][k]-spectrogram[i][k])*(real_spectrogram[i][k]-spectrogram[i][k])/(spectrogram[i][k]*spectrogram[i][k]+1e-20);
       // sum+=(real_spectrogram[i][k]-spectrogram[i][k])*(real_spectrogram[i][k]-spectrogram[i][k]);
-      // sum+=real_spectrogram[i][k]*real_spectrogram[i][k];
-      // psum+=spectrogram[i][k]*spectrogram[i][k];
-      sum+=real_aperiodicity[i][k]*real_aperiodicity[i][k];
-      psum+=aperiodicity[i][k]*aperiodicity[i][k];
+      sum+=real_spectrogram[i][k]*real_spectrogram[i][k];
+      psum+=spectrogram[i][k]*spectrogram[i][k];
+      // sum+=real_aperiodicity[i][k]*real_aperiodicity[i][k];
+      // psum+=aperiodicity[i][k]*aperiodicity[i][k];
     }
     cout << "(" << sum << ", " << psum << ")";
     // cout <<  ", " << psum ;
@@ -407,47 +449,47 @@ void DisplayInformation(int fs, int nbit, int x_length) {
   printf("Length %f [sec]\n", static_cast<double>(x_length) / fs);
 }
 
-// void F0EstimationDio(double *x, int x_length,
-//     WorldParameters *world_parameters) {
-//   DioOption option = {0};
-//   InitializeDioOption(&option);
+void F0EstimationDio(double *x, int x_length,
+    WorldParameters *world_parameters) {
+  DioOption option = {0};
+  InitializeDioOption(&option);
 
-//   // Modification of the option
-//   option.frame_period = world_parameters->frame_period;
+  // Modification of the option
+  option.frame_period = world_parameters->frame_period;
 
-//   // Valuable option.speed represents the ratio for downsampling.
-//   // The signal is downsampled to fs / speed Hz.
-//   // If you want to obtain the accurate result, speed should be set to 1.
-//   option.speed = 1;
+  // Valuable option.speed represents the ratio for downsampling.
+  // The signal is downsampled to fs / speed Hz.
+  // If you want to obtain the accurate result, speed should be set to 1.
+  option.speed = 1;
 
-//   // You can set the f0_floor below world::kFloorF0.
-//   option.f0_floor = 40.0;
+  // You can set the f0_floor below world::kFloorF0.
+  option.f0_floor = 40.0;
 
-//   // You can give a positive real number as the threshold.
-//   // Most strict value is 0, but almost all results are counted as unvoiced.
-//   // The value from 0.02 to 0.2 would be reasonable.
-//   option.allowed_range = 0.1;
+  // You can give a positive real number as the threshold.
+  // Most strict value is 0, but almost all results are counted as unvoiced.
+  // The value from 0.02 to 0.2 would be reasonable.
+  option.allowed_range = 0.1;
 
-//   // Parameters setting and memory allocation.
-//   world_parameters->f0_length = GetSamplesForDIO(world_parameters->fs,
-//     x_length, world_parameters->frame_period);
-//   world_parameters->f0 = new double[world_parameters->f0_length];
-//   world_parameters->time_axis = new double[world_parameters->f0_length];
-//   double *refined_f0 = new double[world_parameters->f0_length];
+  // Parameters setting and memory allocation.
+  world_parameters->f0_length = GetSamplesForDIO(world_parameters->fs,
+    x_length, world_parameters->frame_period);
+  world_parameters->f0 = new double[world_parameters->f0_length];
+  world_parameters->time_axis = new double[world_parameters->f0_length];
+  double *refined_f0 = new double[world_parameters->f0_length];
 
-//   printf("\nAnalysis\n");
-//   Dio(x, x_length, world_parameters->fs, &option, world_parameters->time_axis,
-//       world_parameters->f0);
+  printf("\nAnalysis\n");
+  Dio(x, x_length, world_parameters->fs, &option, world_parameters->time_axis,
+      world_parameters->f0);
 
-//   // StoneMask is carried out to improve the estimation performance.
-//   StoneMask(x, x_length, world_parameters->fs, world_parameters->time_axis,
-//       world_parameters->f0, world_parameters->f0_length, refined_f0);
+  // StoneMask is carried out to improve the estimation performance.
+  StoneMask(x, x_length, world_parameters->fs, world_parameters->time_axis,
+      world_parameters->f0, world_parameters->f0_length, refined_f0);
 
-//   for (int i = 0; i < world_parameters->f0_length; ++i)
-//     world_parameters->f0[i] = refined_f0[i];
+  for (int i = 0; i < world_parameters->f0_length; ++i)
+    world_parameters->f0[i] = refined_f0[i];
 
-//   delete[] refined_f0;
-// }
+  delete[] refined_f0;
+}
 
 // void F0EstimationHarvest(double *x, int x_length,
 //     WorldParameters *world_parameters) {
@@ -529,44 +571,44 @@ void DisplayInformation(int fs, int nbit, int x_length) {
 //       world_parameters->fft_size, &option, world_parameters->aperiodicity);
 // }
 
-void ParameterModification(int argc, char *argv[], int fs, int f0_length,
-    int fft_size, double *f0, double **spectrogram) {
-  // F0 scaling
-  if (argc >= 4) {
-    double shift = atof(argv[3]);
-    for (int i = 0; i < f0_length; ++i) f0[i] *= shift;
-  }
-  if (argc < 5) return;
+// void ParameterModification(int argc, char *argv[], int fs, int f0_length,
+//     int fft_size, double *f0, double **spectrogram) {
+//   // F0 scaling
+//   if (argc >= 4) {
+//     double shift = atof(argv[3]);
+//     for (int i = 0; i < f0_length; ++i) f0[i] *= shift;
+//   }
+//   if (argc < 5) return;
 
-  // Spectral stretching
-  double ratio = atof(argv[4]);
-  double *freq_axis1 = new double[fft_size];
-  double *freq_axis2 = new double[fft_size];
-  double *spectrum1 = new double[fft_size];
-  double *spectrum2 = new double[fft_size];
+//   // Spectral stretching
+//   double ratio = atof(argv[4]);
+//   double *freq_axis1 = new double[fft_size];
+//   double *freq_axis2 = new double[fft_size];
+//   double *spectrum1 = new double[fft_size];
+//   double *spectrum2 = new double[fft_size];
 
-  for (int i = 0; i <= fft_size / 2; ++i) {
-    freq_axis1[i] = ratio * i / fft_size * fs;
-    freq_axis2[i] = static_cast<double>(i) / fft_size * fs;
-  }
-  for (int i = 0; i < f0_length; ++i) {
-    for (int j = 0; j <= fft_size / 2; ++j)
-      spectrum1[j] = log(spectrogram[i][j]);
-    interp1(freq_axis1, spectrum1, fft_size / 2 + 1, freq_axis2,
-      fft_size / 2 + 1, spectrum2);
-    for (int j = 0; j <= fft_size / 2; ++j)
-      spectrogram[i][j] = exp(spectrum2[j]);
-    if (ratio >= 1.0) continue;
-    for (int j = static_cast<int>(fft_size / 2.0 * ratio);
-        j <= fft_size / 2; ++j)
-      spectrogram[i][j] =
-      spectrogram[i][static_cast<int>(fft_size / 2.0 * ratio) - 1];
-  }
-  delete[] spectrum1;
-  delete[] spectrum2;
-  delete[] freq_axis1;
-  delete[] freq_axis2;
-}
+//   for (int i = 0; i <= fft_size / 2; ++i) {
+//     freq_axis1[i] = ratio * i / fft_size * fs;
+//     freq_axis2[i] = static_cast<double>(i) / fft_size * fs;
+//   }
+//   for (int i = 0; i < f0_length; ++i) {
+//     for (int j = 0; j <= fft_size / 2; ++j)
+//       spectrum1[j] = log(spectrogram[i][j]);
+//     interp1(freq_axis1, spectrum1, fft_size / 2 + 1, freq_axis2,
+//       fft_size / 2 + 1, spectrum2);
+//     for (int j = 0; j <= fft_size / 2; ++j)
+//       spectrogram[i][j] = exp(spectrum2[j]);
+//     if (ratio >= 1.0) continue;
+//     for (int j = static_cast<int>(fft_size / 2.0 * ratio);
+//         j <= fft_size / 2; ++j)
+//       spectrogram[i][j] =
+//       spectrogram[i][static_cast<int>(fft_size / 2.0 * ratio) - 1];
+//   }
+//   delete[] spectrum1;
+//   delete[] spectrum2;
+//   delete[] freq_axis1;
+//   delete[] freq_axis2;
+// }
 
 // void WaveformSynthesis(WorldParameters *world_parameters, int fs,
 //     int y_length, double *y) {
@@ -602,54 +644,54 @@ void ParameterModification(int argc, char *argv[], int fs, int f0_length,
 //   DestroySynthesizer(&synthesizer);
 // }
 
-void WaveformSynthesis3(WorldParameters *world_parameters, int fs,
-    int y_length, double *y) {
-  // Synthesis by the aperiodicity
-  printf("\nSynthesis 3 (Ring buffer is efficiently used.)\n");
+// void WaveformSynthesis3(WorldParameters *world_parameters, int fs,
+//     int y_length, double *y) {
+//   // Synthesis by the aperiodicity
+//   printf("\nSynthesis 3 (Ring buffer is efficiently used.)\n");
 
-  WorldSynthesizer synthesizer = { 0 };
-  int buffer_size = 64;
-  InitializeSynthesizer(world_parameters->fs, world_parameters->frame_period,
-      world_parameters->fft_size, buffer_size, 100, &synthesizer);
+//   WorldSynthesizer synthesizer = { 0 };
+//   int buffer_size = 64;
+//   InitializeSynthesizer(world_parameters->fs, world_parameters->frame_period,
+//       world_parameters->fft_size, buffer_size, 100, &synthesizer);
 
-  int offset = 0;
-  int index = 0;
-  for (int i = 0; i < world_parameters->f0_length;) {
-    // Add one frame (i shows the frame index that should be added)
-    if (AddParameters(&world_parameters->f0[i], 1,
-      &world_parameters->spectrogram[i], &world_parameters->aperiodicity[i],
-      &synthesizer) == 1) ++i;
+//   int offset = 0;
+//   int index = 0;
+//   for (int i = 0; i < world_parameters->f0_length;) {
+//     // Add one frame (i shows the frame index that should be added)
+//     if (AddParameters(&world_parameters->f0[i], 1,
+//       &world_parameters->spectrogram[i], &world_parameters->aperiodicity[i],
+//       &synthesizer) == 1) ++i;
 
-    // Synthesize speech with length of buffer_size sample.
-    // It is repeated until the function returns 0
-    // (it suggests that the synthesizer cannot generate speech).
-    while (Synthesis2(&synthesizer) != 0) {
-      index = offset * buffer_size;
-      for (int j = 0; j < buffer_size; ++j)
-        y[j + index] = synthesizer.buffer[j];
-      offset++;
-    }
+//     // Synthesize speech with length of buffer_size sample.
+//     // It is repeated until the function returns 0
+//     // (it suggests that the synthesizer cannot generate speech).
+//     while (Synthesis2(&synthesizer) != 0) {
+//       index = offset * buffer_size;
+//       for (int j = 0; j < buffer_size; ++j)
+//         y[j + index] = synthesizer.buffer[j];
+//       offset++;
+//     }
 
-    // Check the "Lock" (Please see synthesisrealtime.h)
-    if (IsLocked(&synthesizer) == 1) {
-      printf("Locked!\n");
-      break;
-    }
-  }
+//     // Check the "Lock" (Please see synthesisrealtime.h)
+//     if (IsLocked(&synthesizer) == 1) {
+//       printf("Locked!\n");
+//       break;
+//     }
+//   }
 
-  DestroySynthesizer(&synthesizer);
-}
+//   DestroySynthesizer(&synthesizer);
+// }
 
-void DestroyMemory(WorldParameters *world_parameters) {
-  delete[] world_parameters->time_axis;
-  delete[] world_parameters->f0;
-  for (int i = 0; i < world_parameters->f0_length; ++i) {
-    delete[] world_parameters->spectrogram[i];
-    delete[] world_parameters->aperiodicity[i];
-  }
-  delete[] world_parameters->spectrogram;
-  delete[] world_parameters->aperiodicity;
-}
+// void DestroyMemory(WorldParameters *world_parameters) {
+//   delete[] world_parameters->time_axis;
+//   delete[] world_parameters->f0;
+//   for (int i = 0; i < world_parameters->f0_length; ++i) {
+//     delete[] world_parameters->spectrogram[i];
+//     delete[] world_parameters->aperiodicity[i];
+//   }
+//   delete[] world_parameters->spectrogram;
+//   delete[] world_parameters->aperiodicity;
+// }
 
 }  // namespace
 
@@ -744,7 +786,7 @@ int main(int argc, char *argv[]) {
   for(int k=0;k<x_length;k++){
     y[k]=0.0;
   }
-  //doit(x, x_length, fs, y);
+  // doit(x, x_length, fs, y);
   online(x, x_length, fs, y);
   sprintf(filename, "%s", argv[2]);
   wavwrite(y, x_length, fs, 16, filename);

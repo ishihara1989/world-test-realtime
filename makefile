@@ -1,9 +1,9 @@
-CXX = g++-8
-C99 = gcc-8 -std=c99
-LINK = g++-8
+CXX = g++
+C99 = g++
+LINK = g++
 AR = ar
 #DEBUG_FLAG=-g
-CXXFLAGS = -O1 -Wall -fPIC $(DEBUG_FLAG)
+CXXFLAGS = -O2 -Wall -fPIC $(DEBUG_FLAG) -mtune=native -march=native -mfpmath=both
 CFLAGS = $(CXXFLAGS)
 ARFLAGS = -rv
 OUT_DIR = ./build

@@ -14,14 +14,6 @@
 #include<stdio.h>
 #include<cmath>
 #include"portaudio.h"
-#define Fs 16000 //サンプリング周波数
-#define FRAMES_PER_BUFFER 2048 //バッファサイズ
-
-/*ユーザ定義データ*/
-typedef struct{
-    float freq; //正弦波の周波数
-    float index;
-}padata;
 
 struct WorldOptions{
   int fs;
@@ -206,9 +198,9 @@ static int dsp(const void *inputBuffer, //入力
   int cut = data->options.cut;
   int buffer_size = data->options.buffer_size;
 
-  for( i=0; i<framesPerBuffer; i++){
-      out[i] = in[i];
-  }
+  // for( i=0; i<framesPerBuffer; i++){
+  //     out[i] = in[i];
+  // }
   // return 0;
 
   // shift and copy
@@ -259,53 +251,72 @@ static int dsp(const void *inputBuffer, //入力
   return 0;
 }
 
+void printError(PaError err){
+  if( err != paNoError )
+  {
+    cerr << "ERROR: Pa_Initialize returned " << err << endl;
+    cerr << Pa_GetErrorText( err ) << endl;
+  }
+}
+
 int main(){
   constexpr int fs = 16000;
-    PaStreamParameters inParam;
-    PaStreamParameters outParam;
-    PaStream *stream;
-    PaError err;
-    WorldOptions options(fs);
-    options.defaultOptions();
-    WorldParams data;
-    data.initParams(options);
+  constexpr int buffer_size = 2048;
+  PaStreamParameters inParam;
+  PaStreamParameters outParam;
+  PaStream *stream;
+  PaError err;
+  WorldOptions options(fs);
+  options.defaultOptions();
+  WorldParams *data=new WorldParams();
+  data->initParams(options);
 
-    //PortAudio初期化
-    Pa_Initialize();
+  err = Pa_Initialize();
+  if( err != paNoError )
+  {
+    printError(err);
+    return 1;
+  }
+  int numDevices = Pa_GetDeviceCount();
+  if(numDevices<0){
+    printError(numDevices);
+    return 1;
+  }
 
-    inParam.device = Pa_GetDefaultInputDevice();
-    inParam.channelCount = 1;
-    inParam.sampleFormat = paFloat32;
-    inParam.suggestedLatency = Pa_GetDeviceInfo( inParam.device )->defaultLowOutputLatency;
-    inParam.hostApiSpecificStreamInfo = nullptr;
-    //出力の設定
-    outParam.device = Pa_GetDefaultOutputDevice();
-    outParam.channelCount = 1;
-    outParam.sampleFormat = paFloat32;
-    outParam.suggestedLatency = Pa_GetDeviceInfo( outParam.device )->defaultLowOutputLatency;
-    outParam.hostApiSpecificStreamInfo = nullptr;
+  cout << "num devices: " << numDevices << endl;
 
-    //PortAudioオープン
-    Pa_OpenStream(
-        &stream,
-        &inParam,
-        &outParam,
-        Fs,
-        FRAMES_PER_BUFFER,
-        paClipOff,
-        dsp,
-        &data);
-    
-    //PortAudioスタート
-    Pa_StartStream(stream);
+  inParam.device = Pa_GetDefaultInputDevice();
+  inParam.channelCount = 1;
+  inParam.sampleFormat = paFloat32;
+  inParam.suggestedLatency = Pa_GetDeviceInfo( inParam.device )->defaultLowOutputLatency;
+  inParam.hostApiSpecificStreamInfo = nullptr;
+  outParam.device = Pa_GetDefaultOutputDevice();
+  outParam.channelCount = 1;
+  outParam.sampleFormat = paFloat32;
+  outParam.suggestedLatency = Pa_GetDeviceInfo( outParam.device )->defaultLowOutputLatency;
+  outParam.hostApiSpecificStreamInfo = nullptr;
 
-    //エンターキーが押されるまで待機
-    getchar();
+  //PortAudioオープン
+  Pa_OpenStream(
+      &stream,
+      &inParam,
+      &outParam,
+      fs,
+      buffer_size,
+      paClipOff,
+      dsp,
+      data);
+  
+  //PortAudioスタート
+  Pa_StartStream(stream);
 
-    //PortAudio終了
-    Pa_StopStream(stream);
-    Pa_CloseStream(stream);
-    Pa_Terminate();
-    return 0;
-    return 0;
+  //エンターキーが押されるまで待機
+  getchar();
+
+  //PortAudio終了
+  Pa_StopStream(stream);
+  Pa_CloseStream(stream);
+  Pa_Terminate();
+  return 0;
+  return 0;
 }
